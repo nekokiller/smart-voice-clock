@@ -3,7 +3,6 @@ const $ = (id) => document.getElementById(id);
 const pad = (n) => String(n).padStart(2, '0');
 
 let state = null;
-let secondsLeft = 0;
 let formDirty = false;
 
 // ---------- 基礎工具 ----------
@@ -64,7 +63,7 @@ async function refresh() {
     $('pill-cosy').className = 'pill bad';
     return;
   }
-  secondsLeft = state.secondsToNextHour;
+  state.fetchedAt = Date.now();
   const ok = state.cosyHealth.ok;
   $('pill-cosy').textContent = ok ? 'CosyVoice 正常' : 'CosyVoice 離線（將用 say）';
   $('pill-cosy').className = `pill ${ok ? 'ok' : 'bad'}`;
@@ -77,16 +76,20 @@ async function refresh() {
   fillVoiceSelect();
 }
 
+// 以「取得伺服器時間的瞬間」為基準推算，每次重新抓取都會重新校正
 function tickClock() {
-  if (!state) return;
-  secondsLeft = Math.max(0, secondsLeft - 1);
-  $('countdown').textContent = `${pad(Math.floor(secondsLeft / 60))}:${pad(secondsLeft % 60)}`;
+  if (!state || !state.fetchedAt) return;
+  const elapsed = Math.floor((Date.now() - state.fetchedAt) / 1000);
   const p = state.now;
-  const total = (p.hour * 3600 + p.minute * 60 + p.second + Math.round((Date.now() - tickClock.t0) / 1000)) % 86400;
+  const total = (p.hour * 3600 + p.minute * 60 + p.second + elapsed) % 86400;
   $('pill-clock').textContent = `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total / 60) % 60)}:${pad(total % 60)}`;
-  if (secondsLeft === 0) setTimeout(refresh, 3000);
+  const left = Math.max(0, state.secondsToNextHour - elapsed);
+  $('countdown').textContent = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
+  if (left === 0 && !tickClock.pending) {
+    tickClock.pending = true;
+    setTimeout(() => { tickClock.pending = false; refresh(); }, 3000);
+  }
 }
-tickClock.t0 = Date.now();
 
 function renderHistory(list) {
   const body = $('history-body');
