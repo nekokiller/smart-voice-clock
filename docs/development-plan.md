@@ -1,0 +1,191 @@
+# 智慧語音報時 開發計劃
+
+## 1. 目標
+
+在 24 小時開機的 Mac mini 上常駐運行,**每到整點,隨機挑選一種語音與一段文字進行語音報時**。提供區網可存取的網頁控制面板,用於設定、預覽與查看紀錄。
+
+## 2. 已確認的決策
+
+| 項目 | 決定 |
+|---|---|
+| 發聲位置 | **後端**(Node 呼叫 macOS `say`),不依賴瀏覽器開著 |
+| 網頁角色 | 控制面板(設定、試聽、歷史),非發聲端 |
+| 存取範圍 | **區網可存取**(綁定 `0.0.0.0`) |
+| 語音來源 | **主:本機 CosyVoice3 服務**(`127.0.0.1:8765`,19 種音色);**備援:macOS `say`** |
+| 文字來源 | 事先配置的多組靜態文案庫 JSON(不使用動態生成),支援 `{time}` 變數 |
+| 靜音時段 | **預設啟用,01:00–05:00** |
+| 密碼 | 放在專案根目錄 `.env`(`PANEL_PASSWORD=`),`.env` 不進版控,另附 `.env.example` |
+| 時區 / 語言 | Asia/Taipei、繁體中文(可設定) |
+| 相依套件 | 零外部相依,僅用 Node 內建模組(Node ≥ 20,現為 v24) |
+
+## 3. 架構
+
+```
+┌────────────── Mac mini ──────────────┐
+│  launchd (LaunchAgent, KeepAlive)    │
+│    └─ node server.js                 │
+│        ├─ Scheduler  (整點判斷)       │
+│        ├─ Speaker    (say 呼叫/佇列)  │
+│        ├─ Phrases    (文案庫+選取)    │
+│        ├─ Config     (讀寫設定檔)     │
+│        └─ HTTP API + 靜態網頁         │
+└──────────────────────────────────────┘
+         ▲ 區網瀏覽器 (控制面板)
+```
+
+### 目錄結構
+
+```
+smart-voice-clock/
+├─ server.js               # 入口:HTTP 伺服器 + 啟動排程
+├─ src/
+│  ├─ scheduler.js         # 整點排程
+│  ├─ speaker.js           # 呼叫 say、序列化播放
+│  ├─ voices.js            # 列舉/過濾系統語音
+│  ├─ phrases.js           # 文案載入、時段分類、隨機選取、模板代換
+│  ├─ timeText.js          # 產生「下午三點整」之類口語時間
+│  ├─ config.js            # 預設值、讀寫、驗證
+│  └─ history.js           # 最近播報紀錄
+├─ public/                 # 單頁控制面板(HTML/CSS/JS,無建置)
+├─ data/
+│  ├─ phrases.json         # 文案庫(納入版控)
+│  ├─ config.json          # 使用者設定(gitignore)
+│  └─ history.json         # 播報紀錄(gitignore)
+├─ launchd/
+│  └─ com.nekokiller.voiceclock.plist.template
+├─ scripts/
+│  ├─ install-service.sh   # 安裝並載入 LaunchAgent
+│  └─ uninstall-service.sh
+├─ docs/
+│  └─ development-plan.md
+├─ .gitignore
+├─ package.json
+└─ README.md
+```
+
+## 4. 核心設計
+
+### 4.1 排程(重點:可靠)
+- 不用單次長 `setTimeout`(休眠喚醒、時鐘校正會失準)。
+- 採 **每 15 秒輪詢**:取目前時區的 `YYYY-MM-DD-HH` 當 key,若與 `lastFiredKey` 不同,且分鐘 < 2,則觸發報時並記錄 key,確保**每小時恰好一次**、重啟後不重複。
+- 容忍 2 分鐘內的延遲;錯過太久(例如整點時程式沒在跑)則略過,不補播。
+- 靜音時段(`quietHours`,如 23:00–07:00)內不播,但仍記錄為「已略過」。
+
+### 4.2 語音
+
+#### 4.2.0 本機 CosyVoice3 調查結果(已實測)
+- 服務:`~/cosyvoice3_server.py`(Flask),由 LaunchAgent `com.nekokiller.cosyvoice` 常駐,監聽 **127.0.0.1:8765**,模型已載入(約 6.8 GB 記憶體)。
+- 介面:`GET /tts?text=...&voice=<音色名>` 或 `POST /tts`,回傳 24 kHz WAV;`GET /health` 回報狀態。
+- 可用音色(`/Volumes/AcasisRaid2TB/CosyVoice3/audios_pt/*.pt`,共 19 個):休閒中文女、俏皮中文女、優雅中文女、氣質中文女、怒吼中文男、悲壯中文男、理智中文男、普通美語男、輕聲日文女、哆啦A夢、唐伯虎、小蘭、柚子、柯南、橘子、花媽、高木警官 等。音色名 = 檔名(不含 `.pt`)。不帶 `voice` 時走預設 zero-shot 參考音。
+- **延遲實測**:合成約 2.7 秒語音耗時 **9.5 秒**(單執行緒,`threaded=False`,一次只能處理一個請求)。
+- **相依風險**:模型與音色檔位於外接碟 `/Volumes/AcasisRaid2TB`;該碟未掛載則服務無法運作。
+- 本專案**只當客戶端呼叫此服務,不修改它、不重複部署模型**。
+
+#### 4.2.1 預先合成(pre-render)策略
+合成需 ~10 秒且不保證穩定,不能等到整點才開始:
+1. 每小時 **xx:55** 先決定下一個整點的「音色 + 文案」,呼叫 CosyVoice 合成並存成 `cache/<YYYYMMDDHH>.wav`。
+2. 整點時直接 `afplay` 播放快取檔,**零延遲、準時**。
+3. 合成失敗、逾時(上限 45 秒)或服務不可用 → 整點時改用 macOS `say`(隨機 zh_TW 語音)播同一段文案,並在歷史中標記 `fallback`。
+4. 整點後清除超過 24 小時的快取檔。
+5. 合成請求與試聽共用序列化佇列(因服務端是單執行緒),試聽排在預合成之後或被拒絕並提示忙碌。
+6. 啟動時打 `/health` 自檢,面板顯示 CosyVoice 狀態(綠/紅)與外接碟是否掛載。
+
+#### 4.2.2 備援:macOS `say`
+- `say -v '?'` 解析可用語音,過濾 `zh_TW`(預設)、可選 `zh_CN` / `zh_HK`。
+- 設定中可勾選啟用的音色(CosyVoice 與 say 各一份清單);報時時從 CosyVoice 啟用清單**隨機抽一個**,`say` 僅在備援時使用。
+- 可選:避免連續兩次抽到同一個語音。
+- 播放用 `child_process.spawn('say', ['-v', voice, text])`(參數陣列,不經 shell,避免注入)。
+- 播放佇列序列化,避免試聽與整點播報重疊。逾時(如 60 秒)強制終止。
+- 選配:報時前先 `afplay` 一聲提示音。
+- 音量:`say` 無音量參數,以系統音量為準(可選用 `osascript` 設定,預設不動系統音量)。
+
+### 4.3 文案
+- `phrases.json` 依時段分類:`general`、`dawn`、`morning`、`noon`、`afternoon`、`evening`、`night`。
+- 選取池 = `general` + 當前時段專屬文案,隨機取一句;避免與上一句重複。
+- 模板變數:`{time}`(如「下午三點整」)、`{hour}`(數字)。
+- 口語時間規則:0 點→「午夜十二點」、12 點→「中午十二點」、其餘「上午/下午/晚上 N 點整」。
+
+### 4.4 設定(`data/config.json`)
+```json
+{
+  "enabled": true,
+  "timezone": "Asia/Taipei",
+  "engine": "cosyvoice",        // cosyvoice | say
+  "cosyvoice": { "url": "http://127.0.0.1:8765", "voices": [], "timeoutSec": 45 }, // voices 空 = 全部
+  "say": { "voices": [], "locales": ["zh_TW"] },
+  "prerenderMinute": 55,
+  "quietHours": { "enabled": true, "start": "01:00", "end": "05:00" },
+  "chime": false,
+  "avoidRepeat": true,
+  "customPhrases": []           // 使用者額外文案
+}
+```
+寫入採「寫暫存檔再 rename」,避免損毀;載入時與預設值合併並驗證。
+
+### 4.5 HTTP API
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| GET | `/api/state` | 設定、可用語音、下次整點時間、最近紀錄 |
+| POST | `/api/config` | 更新設定(驗證後儲存) |
+| POST | `/api/test` | 以指定語音/文字試聽(不指定則隨機) |
+| POST | `/api/announce` | 立即執行一次完整報時流程 |
+| GET | `/api/history` | 播報歷史 |
+| GET | `/api/phrases` / POST | 檢視/新增自訂文案 |
+
+### 4.6 區網存取的安全考量
+- 綁定 `0.0.0.0`,**一律要求存取密碼**:從專案根目錄 `.env` 讀取 `PANEL_PASSWORD`(自行解析 `.env`,零相依),以 HTTP Basic Auth 驗證並用 `timingSafeEqual` 比對;**未設定密碼則拒絕啟動**(不允許無密碼對區網開放)。`.env` 加入 `.gitignore`,提供 `.env.example`,並在安裝腳本中把 `.env` 權限設為 600。
+- 限制請求 body 大小(如 16 KB)、文字長度(如 200 字),防止被灌爆。
+- `/api/test` 加簡單頻率限制,避免區網內被當成喇叭轟炸。
+- 不提供任何執行任意指令的入口;文字只作為 `say` 的參數陣列元素。
+- 不對外網開放;若要遠端存取,建議走 Tailscale 等 VPN,不做 port forward。
+
+### 4.7 控制面板(`public/`)
+- 狀態區:服務運行中、下次報時倒數、最近一次報時。
+- 設定區:總開關、語音多選(可逐個試聽)、靜音時段、提示音。
+- 文案區:顯示文案庫、新增自訂文案、單句試聽。
+- 歷史區:最近 50 筆(時間、語音、文字、狀態)。
+- 「立即報時」按鈕。
+- 響應式、支援手機操作;無框架、無建置。
+
+### 4.8 常駐
+- **LaunchAgent**(`~/Library/LaunchAgents/`,使用者登入後才能使用音訊輸出):`RunAtLoad`、`KeepAlive`,log 輸出到 `~/Library/Logs/voiceclock/`。
+- 啟動順序:服務啟動時若 CosyVoice 尚未就緒或外接碟未掛載,不阻塞啟動,只在面板標示並於預合成時重試。
+- `install-service.sh`:由模板產生 plist(填入 node 絕對路徑與專案路徑),`launchctl bootstrap` 載入。
+- 前置:Mac mini 設定自動登入、關閉自動睡眠(目前由 `caffeinate` 暫時維持,建議在系統設定固定)。
+- 密碼不寫進 plist,由程式自己讀 `.env`。
+
+## 5. 開發階段
+
+| 階段 | 內容 | 驗收標準 |
+|---|---|---|
+| **M1 核心** | `timeText`、`phrases`、`voices`(CosyVoice + say)、`speaker`、預合成快取;CLI 腳本可手動播一次隨機報時 | 能聽到隨機音色+文案;口語時間 0–23 點皆正確;關閉 CosyVoice 時自動退回 `say` |
+| **M2 排程** | `scheduler`(含 xx:55 預合成)、`config`、`history`、靜音時段 01:00–05:00 | 以模擬時鐘測試:每小時僅觸發一次、重啟不重複、靜音時段不合成也不播、預合成失敗會備援 |
+| **M3 API+面板** | HTTP 伺服器、Basic Auth、API、控制面板 | 區網另一台裝置可開啟、登入、修改設定、試聽 |
+| **M4 常駐** | launchd 安裝/解除腳本、README | 重開機後自動啟動;kill 程序後自動重啟;下個整點成功報時 |
+| **M5 加強(選配)** | 提示音、避免連續重複、自訂文案、擴充文案庫 | 視需求逐項加入 |
+
+## 6. 測試計畫
+- **單元測試**(`node --test`,零相依):`timeText`(24 小時全覆蓋)、文案選取與模板代換、設定驗證/合併、排程的觸發判斷(注入假時鐘)。
+- **整合測試**:`speaker` 以可注入的假 `say` 驗證參數與序列化;API 以實際啟動伺服器 + `fetch` 測試(含未授權 401、超大 body 拒絕)。
+- **手動驗證**:實機聽各語音;跨整點實測;重開機測試;睡眠喚醒後行為。
+
+## 7. 風險與對策
+
+| 風險 | 對策 |
+|---|---|
+| 整點時程式剛好重啟/卡住 | 輪詢+2 分鐘容忍視窗;KeepAlive 自動重啟 |
+| 兩次播報重疊或與試聽打架 | 播放佇列序列化 |
+| 區網被他人濫用 | 密碼、頻率限制、輸入長度限制 |
+| 系統語音被移除或名稱變動 | 每次啟動重新列舉;抽到不存在的語音則退回預設並記錄 |
+| LaunchAgent 在無人登入時無音訊 | 設定自動登入;文件註明 |
+| 系統更新後 `say` 路徑/行為改變 | 啟動自檢(`say -v '?'` 失敗則在面板顯示錯誤) |
+
+## 8. 已確認事項(由使用者決定)
+1. 靜音時段預設啟用,01:00–05:00。
+2. 面板密碼放 `.env`,由使用者自行填入。
+3. 不做動態生成文案,事先配置多組文案(目標每個時段 ≥ 8 句,通用 ≥ 20 句)。
+4. 語音以本機既有 CosyVoice3 服務為主、`say` 為備援。
+
+## 9. 仍需注意
+- CosyVoice 單次合成 ~10 秒且為單執行緒:本專案的預合成會佔用它,若你同時有其他程式(如 Hermes)在用,可能互相等待。
+- 外接碟 `/Volumes/AcasisRaid2TB` 離線時會自動退回 `say`。

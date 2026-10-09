@@ -1,0 +1,7 @@
+.DS_Store
+.env
+node_modules/
+cache/
+data/config.json
+data/history.json
+*.log
