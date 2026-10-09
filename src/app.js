@@ -6,7 +6,7 @@ import { addHours, hourKey, isQuiet, parseLocal, partsFromDate } from './clock.j
 import { normalizeConfig, ValidationError } from './config.js';
 import { decide } from './scheduler.js';
 import { periodsFor, render } from './phrases.js';
-import { spokenTime } from './timeText.js';
+import { spokenClock, spokenTime } from './timeText.js';
 import { createRateLimiter } from './util.js';
 
 const MAX_BODY = 16 * 1024;
@@ -52,6 +52,12 @@ function cleanText(v) {
   if (typeof v !== 'string' || !v.trim()) throw new HttpError(400, '文字不可為空');
   if (v.length > MAX_TEXT) throw new HttpError(400, `文字不可超過 ${MAX_TEXT} 字`);
   return v.trim();
+}
+
+function cleanMinute(v) {
+  if (v === undefined) return 0;
+  if (!Number.isInteger(v) || v < 0 || v > 59) throw new HttpError(400, 'minute 必須是 0–59 的整數');
+  return v;
 }
 
 function cleanHour(v) {
@@ -227,23 +233,27 @@ export function createApp(ctx) {
 
     'POST /api/test/random': async (body) => {
       const hour = body.hour === undefined ? wall().hour : cleanHour(body.hour);
+      const minute = cleanMinute(body.minute);
       const mode = ['pick', 'synth', 'play'].includes(body.mode) ? body.mode : 'pick';
       if (mode === 'pick') {
-        const c = await announcer.choose({ hour, engine: body.engine });
+        const c = await announcer.choose({ hour, minute, engine: body.engine });
         tlog('info', `抽選 [${c.engine}/${c.voice}] ${c.text}`);
         return { hour, ...c };
       }
-      const plan = await announcer.prepare({ hour, key: testKey(), engine: body.engine });
+      const plan = await announcer.prepare({ hour, minute, key: testKey(), engine: body.engine });
       if (mode === 'play') await announcer.play(plan);
       tlog('info', `${mode === 'play' ? '播放' : '合成'} [${plan.engine}/${plan.voice}] ${plan.text}`);
-      return { hour, ...plan, file: undefined };
+      return { hour, minute, ...plan, file: undefined };
     },
 
+    // body.now=true 取伺服器目前的幾點幾分；否則用 hour（必填）與 minute（預設 0）
     'POST /api/test/dryrun': async (body) => {
-      const hour = cleanHour(body.hour);
+      const cur = body.now === true ? wall() : null;
+      const hour = cur ? cur.hour : cleanHour(body.hour);
+      const minute = cur ? cur.minute : cleanMinute(body.minute);
       const simulateCosyFail = body.simulateCosyFail === true;
-      tlog('info', `完整流程演練：模擬 ${hour} 點${simulateCosyFail ? '（模擬 CosyVoice 失敗）' : ''}`);
-      const plan = await announcer.prepare({ hour, key: testKey(), simulateCosyFail });
+      tlog('info', `完整流程演練：${cur ? '目前時間 ' : '模擬 '}${hour}:${String(minute).padStart(2, '0')}${simulateCosyFail ? '（模擬 CosyVoice 失敗）' : ''}`);
+      const plan = await announcer.prepare({ hour, minute, key: testKey(), simulateCosyFail });
       tlog('info', `選取 ${plan.timings.choose}ms；合成 ${plan.timings.synth}ms → [${plan.engine}/${plan.voice}]${plan.fallback ? ' 備援' : ''}`);
       if (body.play !== false) {
         await announcer.play(plan);
@@ -280,17 +290,18 @@ export function createApp(ctx) {
     'GET /api/test/phrases': async (_b, url) => {
       const hour = Number(url.searchParams.get('hour'));
       cleanHour(hour);
+      const minute = cleanMinute(url.searchParams.has('minute') ? Number(url.searchParams.get('minute')) : undefined);
       const cfg = getConfig();
       const bank = ctx.phraseBank;
-      const items = bank.pool(hour, cfg.customPhrases).map((tpl) => {
-        const text = render(tpl, hour);
+      const items = bank.pool(hour, cfg.customPhrases).filter((t) => minute === 0 || !t.includes('整點')).map((tpl) => {
+        const text = render(tpl, hour, minute);
         const warnings = [];
         if (/\{[a-z]+\}/i.test(text)) warnings.push('有未代換的變數');
         if (!tpl.includes('{time}')) warnings.push('未包含 {time}');
         if (text.length > 60) warnings.push('偏長');
         return { template: tpl, text, warnings };
       });
-      return { hour, periods: periodsFor(hour), spoken: spokenTime(hour), count: items.length, items };
+      return { hour, minute, periods: periodsFor(hour), spoken: spokenClock(hour, minute), count: items.length, items };
     },
 
     'GET /api/test/log': async (_b, url) => ({ items: testLog.list(Number(url.searchParams.get('since')) || 0) }),

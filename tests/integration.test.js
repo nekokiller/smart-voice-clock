@@ -201,6 +201,14 @@ test('API 測試中心：T2/T4/T5/T6/T7/T8/T9', async () => {
   assert.equal(fail.engine, 'say');
   assert.equal(fail.fallback, true);
 
+  const nowRun = await j('/api/test/dryrun', { now: true, play: false });
+  assert.equal(nowRun.minute, 30);
+  assert.match(nowRun.text, /下午兩點三十分/);
+  const custom = await j('/api/test/dryrun', { hour: 9, minute: 5, play: true });
+  assert.match(custom.text, /上午九點零五分/);
+  assert.ok(s.f.calls.played.length >= 2);
+  assert.equal((await s.call('POST', '/api/test/dryrun', { hour: 9, minute: 60 })).status, 400);
+
   const q = await j('/api/test/quiet', { time: '03:00' });
   assert.equal(q.quiet, true);
   assert.equal(q.announceAtThisHour, false);

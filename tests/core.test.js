@@ -130,3 +130,27 @@ test('解析 say -v ? 輸出', () => {
     { name: 'Meijia', locale: 'zh_TW' }, { name: 'Eddy (中文（台灣）)', locale: 'zh_TW' }, { name: 'Alex', locale: 'en_US' },
   ]);
 });
+
+test('spokenClock：幾點幾分口語化', async () => {
+  const { spokenClock, spokenMinute } = await import('../src/timeText.js');
+  const expect = [
+    [15, 0, '下午三點整'], [15, 5, '下午三點零五分'], [15, 10, '下午三點十分'], [15, 15, '下午三點十五分'],
+    [15, 23, '下午三點二十三分'], [15, 30, '下午三點三十分'], [9, 59, '上午九點五十九分'],
+    [0, 7, '午夜十二點零七分'], [12, 45, '中午十二點四十五分'], [2, 20, '凌晨兩點二十分'], [23, 41, '晚上十一點四十一分'],
+  ];
+  for (const [h, m, t] of expect) assert.equal(spokenClock(h, m), t);
+  assert.equal(spokenMinute(40), '四十');
+  assert.throws(() => spokenClock(10, 60));
+  assert.throws(() => spokenClock(24, 0));
+});
+
+test('非整點不會抽到含「整點」字樣的文案，且渲染出分鐘', () => {
+  const bank = createPhraseBank(phrases, () => 0.5);
+  for (let h = 0; h < 24; h++) {
+    for (let i = 0; i < 60; i++) {
+      const r = bank.pick(h, { minute: 17 });
+      assert.ok(!r.template.includes('整點'), r.template);
+      assert.match(r.text, /十七分/);
+    }
+  }
+});

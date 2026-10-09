@@ -1,4 +1,4 @@
-import { spokenHour, spokenTime } from './timeText.js';
+import { spokenClock, spokenHour } from './timeText.js';
 
 /** 一天分成幾個時段；午夜 0 點額外多一個 midnight 池。 */
 export function periodsFor(hour) {
@@ -12,9 +12,9 @@ export function periodsFor(hour) {
   return ['night'];
 }
 
-export function render(template, hour) {
+export function render(template, hour, minute = 0) {
   return template
-    .replaceAll('{time}', spokenTime(hour))
+    .replaceAll('{time}', spokenClock(hour, minute))
     .replaceAll('{hour}', spokenHour(hour));
 }
 
@@ -32,13 +32,18 @@ export function createPhraseBank(data, rng = Math.random) {
     pool,
     data,
     /** 隨機選一句；盡量不與上一句相同。 */
-    pick(hour, { custom = [], avoidRepeat = true } = {}) {
+    pick(hour, { custom = [], avoidRepeat = true, minute = 0 } = {}) {
       let list = pool(hour, custom);
+      // 非整點時不使用「整點」字樣的文案
+      if (minute !== 0) {
+        const filtered = list.filter((t) => !t.includes('整點'));
+        if (filtered.length) list = filtered;
+      }
       if (!list.length) throw new Error('文案庫是空的');
       if (avoidRepeat && list.length > 1) list = list.filter((t) => t !== lastTemplate);
       const template = list[Math.floor(rng() * list.length)];
       lastTemplate = template;
-      return { template, text: render(template, hour) };
+      return { template, text: render(template, hour, minute) };
     },
   };
 }

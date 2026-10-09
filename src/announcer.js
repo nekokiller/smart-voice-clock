@@ -41,10 +41,10 @@ export function createAnnouncer({ getConfig, engines, voices, player, phraseBank
   const ext = (engine) => (engine === 'cosyvoice' ? 'wav' : 'aiff');
 
   /** 只抽選，不合成。 */
-  async function choose({ hour, engine, text }) {
+  async function choose({ hour, minute = 0, engine, text }) {
     const cfg = getConfig();
     const eng = engine && engine !== 'auto' ? engine : cfg.engine;
-    const picked = text ? { template: null, text } : phraseBank.pick(hour, { custom: cfg.customPhrases, avoidRepeat: cfg.avoidRepeat });
+    const picked = text ? { template: null, text } : phraseBank.pick(hour, { custom: cfg.customPhrases, avoidRepeat: cfg.avoidRepeat, minute });
     return { engine: eng, voice: await chooseVoice(eng, cfg), text: picked.text, template: picked.template };
   }
 
@@ -52,15 +52,15 @@ export function createAnnouncer({ getConfig, engines, voices, player, phraseBank
    * 抽選並合成。優先用設定的引擎；失敗（或模擬失敗）自動改用 say 備援。
    * engine='say' 表示直接用 say（例如整點時沒有預先合成）。
    */
-  async function prepare({ hour, key, engine, text, simulateCosyFail = false, reason }) {
+  async function prepare({ hour, minute = 0, key, engine, text, simulateCosyFail = false, reason }) {
     const cfg = getConfig();
     const timings = {};
     const t0 = Date.now();
     const want = engine && engine !== 'auto' ? engine : cfg.engine;
-    const picked = text ? { text } : phraseBank.pick(hour, { custom: cfg.customPhrases, avoidRepeat: cfg.avoidRepeat });
+    const picked = text ? { text } : phraseBank.pick(hour, { custom: cfg.customPhrases, avoidRepeat: cfg.avoidRepeat, minute });
     timings.choose = Date.now() - t0;
 
-    const plan = { key, hour, text: picked.text, fallback: false, reason: reason || null, timings };
+    const plan = { key, hour, minute, text: picked.text, fallback: false, reason: reason || null, timings };
     if (want === 'cosyvoice') {
       try {
         if (simulateCosyFail) throw new Error('模擬 CosyVoice 失敗');

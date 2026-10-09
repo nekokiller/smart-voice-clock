@@ -216,6 +216,20 @@ $('t5-run').addEventListener('click', (ev) => busy(ev.target, async () => {
   $('t5-out').textContent = planText(r);
 }));
 
+$('t11-now').addEventListener('click', () => {
+  if (!state) return;
+  $('t11-time').value = `${pad(state.now.hour)}:${pad(state.now.minute)}`;
+});
+
+$('t11-run').addEventListener('click', (ev) => busy(ev.target, async () => {
+  const v = $('t11-time').value;
+  const body = { simulateCosyFail: $('t11-fail').checked, play: $('t11-play').checked };
+  if (v) { const [h, m] = v.split(':').map(Number); Object.assign(body, { hour: h, minute: m }); } else body.now = true;
+  $('t11-out').textContent = '處理中…（CosyVoice 合成約需 10 秒）';
+  const r = await api('POST', '/api/test/dryrun', body);
+  $('t11-out').textContent = planText(r);
+}));
+
 $('t7-run').addEventListener('click', (ev) => busy(ev.target, async () => {
   const r = await api('POST', '/api/test/quiet', { time: $('t7-time').value });
   $('t7-out').textContent = `${r.quiet ? '🌙 該時刻在靜音時段內' : '🔔 該時刻不在靜音時段'}\n${r.reason}`;
