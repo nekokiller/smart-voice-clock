@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>智慧語音報時</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>智慧語音報時</h1>
+  <div class="pills">
+    <span id="pill-cosy" class="pill">CosyVoice …</span>
+    <span id="pill-clock" class="pill">--:--:--</span>
+  </div>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">概覽</button>
+  <button data-tab="settings">設定</button>
+  <button data-tab="tests">測試中心</button>
+  <button data-tab="history">歷史</button>
+</nav>
+<main>
+  <section id="tab-overview">
+    <div class="card">
+      <h2>下一次報時</h2>
+      <div class="big" id="countdown">--:--</div>
+      <p id="next-info" class="muted"></p>
+      <button id="btn-announce" class="primary">立即報時（完整流程，會出聲）</button>
+      <p class="muted">音量依 Mac mini 的系統音量。</p>
+    </div>
+    <div class="card"><h2>最近一次</h2><div id="last-entry" class="muted">尚無紀錄</div></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="card">
+      <h2>基本</h2>
+      <label class="row"><input type="checkbox" id="cfg-enabled"> 啟用整點報時</label>
+      <label class="row">主要語音引擎
+        <select id="cfg-engine"><option value="cosyvoice">CosyVoice3（失敗自動退回 say）</option><option value="say">macOS say</option></select>
+      </label>
+      <label class="row"><input type="checkbox" id="cfg-avoid"> 避免連續兩次相同的音色與文案</label>
+      <label class="row">預先合成時間（每小時第幾分）<input type="number" id="cfg-prerender" min="30" max="58" class="narrow"></label>
+      <label class="row">CosyVoice 逾時（秒）<input type="number" id="cfg-timeout" min="5" max="120" class="narrow"></label>
+    </div>
+    <div class="card">
+      <h2>靜音時段</h2>
+      <label class="row"><input type="checkbox" id="cfg-quiet-on"> 啟用（該小時整點落在區間內就不報時）</label>
+      <div class="row">從 <input type="time" id="cfg-quiet-start"> 到 <input type="time" id="cfg-quiet-end"> <span class="muted">（不含結束時刻）</span></div>
+    </div>
+    <div class="card">
+      <h2>CosyVoice 音色 <small class="muted">（全不勾 = 全部）</small></h2>
+      <div class="tools"><button data-sel="cosy-all">全選</button><button data-sel="cosy-none">清空</button></div>
+      <div id="voices-cosy" class="chips"></div>
+    </div>
+    <div class="card">
+      <h2>say 備援語音 <small class="muted">（全不勾 = 台灣中文全部）</small></h2>
+      <div class="tools"><button data-sel="say-all">全選</button><button data-sel="say-none">清空</button></div>
+      <div id="voices-say" class="chips"></div>
+    </div>
+    <div class="card">
+      <h2>自訂文案</h2>
+      <p class="muted">每行一句，可用 <code>{time}</code>（例如「下午三點整」）。會加入所有時段的抽選池。</p>
+      <textarea id="cfg-custom" rows="5"></textarea>
+    </div>
+    <div class="savebar"><button id="btn-save" class="primary">儲存設定</button><span id="save-msg" class="muted"></span></div>
+  </section>
+
+  <section id="tab-tests" hidden>
+    <p class="warn">測試會實際出聲（除非選「只合成」）。靜音時段內手動測試也會播放，請留意時間與音量。測試不會影響正式整點排程。</p>
+
+    <div class="card"><h2>T1 系統自檢</h2>
+      <button id="t1-run">執行自檢</button><ul id="t1-out" class="checks"></ul></div>
+
+    <div class="card"><h2>T2 單一音色試聽</h2>
+      <div class="row"><select id="t2-engine"><option value="cosyvoice">CosyVoice</option><option value="say">say</option></select>
+      <select id="t2-voice"></select></div>
+      <textarea id="t2-text" rows="2" maxlength="200">現在是下午三點整，記得喝口水。</textarea>
+      <div class="row"><button id="t2-play" class="primary">合成並播放</button><button id="t2-synth">只合成</button></div>
+      <div id="t2-out" class="out"></div></div>
+
+    <div class="card"><h2>T3 全部音色巡聽</h2>
+      <div class="row"><select id="t3-engine"><option value="cosyvoice">CosyVoice</option><option value="say">say</option></select>
+      <label><input type="checkbox" id="t3-play" checked> 播放</label></div>
+      <div class="row"><button id="t3-run" class="primary">開始巡聽</button><button id="t3-stop">中止</button><span id="t3-prog" class="muted"></span></div></div>
+
+    <div class="card"><h2>T4 隨機抽選預覽</h2>
+      <div class="row">模擬小時 <select id="t4-hour"></select>
+      <select id="t4-mode"><option value="pick">只抽選（不合成）</option><option value="synth">合成不播放</option><option value="play">合成並播放</option></select></div>
+      <button id="t4-run" class="primary">抽一次</button><div id="t4-out" class="out"></div></div>
+
+    <div class="card"><h2>T5/T6 完整流程演練</h2>
+      <div class="row">模擬小時 <select id="t5-hour"></select>
+      <label><input type="checkbox" id="t5-fail"> 模擬 CosyVoice 失敗（驗證 say 備援）</label>
+      <label><input type="checkbox" id="t5-play" checked> 播放</label></div>
+      <button id="t5-run" class="primary">執行演練</button><div id="t5-out" class="out"></div></div>
+
+    <div class="card"><h2>T7 靜音時段判斷</h2>
+      <div class="row"><input type="time" id="t7-time" value="03:00"><button id="t7-run">判斷</button></div><div id="t7-out" class="out"></div></div>
+
+    <div class="card"><h2>T8 排程判斷（模擬時間）</h2>
+      <div class="row"><input type="datetime-local" id="t8-time">
+      <label><input type="checkbox" id="t8-a"> 本小時已報過</label>
+      <label><input type="checkbox" id="t8-p"> 下一小時已預合成</label></div>
+      <button id="t8-run">判斷</button><div id="t8-out" class="out"></div></div>
+
+    <div class="card"><h2>T9 文案檢查</h2>
+      <div class="row">小時 <select id="t9-hour"></select><button id="t9-run">列出</button></div>
+      <div id="t9-out" class="out"></div></div>
+
+    <div class="card"><h2>T10 日誌</h2>
+      <pre id="log" class="log"></pre><button id="log-clear">清除畫面</button></div>
+  </section>
+
+  <section id="tab-history" hidden>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>時間</th><th>類型</th><th>狀態</th><th>語音</th><th>文字</th></tr></thead>
+      <tbody id="history-body"></tbody></table></div></div>
+  </section>
+</main>
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
